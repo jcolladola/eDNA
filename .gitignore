@@ -1,0 +1,6 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+data/taxonomy.rds
+data/classifier_Leray.rds

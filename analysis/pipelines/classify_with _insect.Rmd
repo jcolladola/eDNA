@@ -1,0 +1,58 @@
+---
+title: "Insect"
+author: "Ramon Gallego"
+date: "4/23/2021"
+output: html_document
+params:
+  folder: 
+    value: ~/Projects/Puffin_diet/data/output/Run20211202
+  file:
+    value: Hash_Key_all_together.fasta
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## For each run
+
+Load the hash_key and return the classified sequences
+
+```{r packages}
+library (here)
+library (tidyverse)
+library (insect)
+```
+
+## do it
+
+
+
+```{r data}
+tree <- read_rds(here("data", "classifier_Leray.rds"))
+
+# seqs <- readFASTA(file.path(params$folder, params$file))
+
+seqs <- readFASTA(here("data/hash_key_nica.fasta"))
+```
+
+
+      
+```{r classify}
+ classify(seqs, tree,cores = 8) -> seqs.classified
+csv(seqs.classified, file.path(params$folder, "hash.classified.insect.csv"))
+    
+    write_csv(seqs.classified, file.path(here("data/seqs_nica.classiffied.csv")))
+```
+      
+   
+      
+
+
+ 
+
+
+
+
+
+

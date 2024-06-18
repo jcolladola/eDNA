@@ -1,0 +1,95 @@
+---
+title: "Nicaragua"
+output: html_notebook
+---
+Cargar paquetes y metadatos
+
+```{r}
+library(here)
+library(tidyverse)
+```
+
+```{r}
+metadata <- read_csv(here("data/metadata_for_pipeline.csv"))
+
+metadata |> 
+  filter(str_detect(Project, "Nicara")) -> metadata_nica
+```
+
+### List all files
+
+```{r}
+all_non_chim <-
+  tibble( files = list.files("C:/Users/RG.5015511/Documents/Local_Projects/little_porcupine/vsearch/bysample/", pattern = "*_non_chim.fasta", full.names = T)) |>
+  mutate(filenames = basename(files)) |> 
+  separate(filenames, into = "sample_id", sep = ".centroids")
+  
+all_non_chim |> 
+  semi_join(metadata_nica)
+
+fromfasta2table <- function (fasta.file) {
+  
+  insect::readFASTA(fasta.file) |> names() -> names_input
+  tibble (headers = names_input) |> 
+    mutate (headers = str_remove(headers, ";$")) |> 
+    separate(headers, into = c("Hash", "nReads"), sep = ";size=")
+    
+}
+
+fromfasta2seqs <- function(fasta.file){
+  
+  tibble(seqs = insect::readFASTA(fasta.file, bin = F)) 
+  
+}
+
+
+all_non_chim |> 
+  semi_join(metadata_nica) |>
+  mutate (output = map(files, fromfasta2table)) |> 
+  select(-files) |>
+  unnest(output) -> all_non_chim_nica
+
+all_non_chim_nica |> 
+  write_csv(here("data/ASV_nicaragua_after_vsearch.csv"))
+
+all_non_chim |> 
+  # slice(1) |> 
+  semi_join(metadata_nica) |>
+  mutate (output = map(files, fromfasta2table),
+          seqs = map (files, fromfasta2seqs))  |> 
+  select(-files) |>
+  unnest(output, seqs) |> 
+  distinct(Hash, seqs) -> hash_key_nica
+
+hash_key_nica |> 
+  write_csv(here("data/hash_key_nica.csv"))
+
+hash_key_nica |> 
+  eDNAfuns::fasta.writer(sequence = seqs, header = Hash, file.out = here("data/hash_key_nica.fasta"))
+```
+Check that all hashes are unique, and that all seqs as well
+
+```{r}
+hash_key_nica |> 
+  group_by(Hash) |> 
+  tally() |> 
+  filter (n>1)
+
+hash_key_nica |> 
+  group_by(seqs) |> 
+  tally() |> 
+  filter (n>1)
+```
+
+### Playing around
+
+```{r}
+# seqs_classiffied <- read_csv(here("data/seqs_classified.csv"))
+
+all_non_chim_nica |> 
+  inner_join(seqs.classified, by = c("Hash" = "representative")) |> 
+  filter (rank %in% c("species", "genus", "family", "order"))
+
+
+```
+
