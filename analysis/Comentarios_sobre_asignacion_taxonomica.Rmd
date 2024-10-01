@@ -1,0 +1,51 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library(readxl)
+library(tidyverse)
+coincidencias_midori_blast_merged <- read_excel("data/coincidencias_midori_blast_merged.xlsx")
+View(coincidencias_midori_blast_merged)
+```
+
+Primero, vamos a eliminar la informacion sobre la muestra y el numero de reads - haremos la asignacion una vez por secuencia, no hay necesidad de repetir el proceso en las 4,6 o 12 veces en las que aparece la misma secuencia en nuestro dataset
+
+```{r}
+coincidencias_midori_blast_merged |> 
+  select (-sample_id, -nReads, -Lago, -`000a`, -`0sample_id`, -`0nReads`, -`0Lago`) |> 
+  distinct() -> unique_hashes
+```
+
+[Nota: evita que los nombres de las variables empiecen con un numero, hace un poco mas dificil lidiar con ellas. Tambien evita (aunque veo que lo has hecho bien) usar espacios en los nombres de las variables. SI fueran dos palabras, separalas con "_"]
+
+Ahora veremos si de verdad los hashes son unicos
+
+```{r}
+unique_hashes |> 
+  distinct(query_id)
+```
+
+Hay 12k hashes unicos pero nuestro dataframe tiene 17 filas, hay que ver que esta pasando
+
+```{r}
+unique_hashes |> 
+  group_by(query_id) |> 
+  add_tally(name = "occurrences") |> 
+  filter (occurrences >1)
+```
+
+Veo que es el caso de que hay dos matches identicos
+
+En un caso son muestras de la misma especie, en otro son muestras en las que no se ha subido el nombre de especie (uncultured bla bla bla). En una busqueda BLAST puedes decirle que no incluya las muestras ambientales, que deber'ia eliminar el problema.
+
+En cualquier caso, entre los valores que puedes pedirle a BLAST es que te diga el staxid de la secuencia subida a Genbank, de este modo podriamos hacer dos cosas:
+ - si hay dos matches de la misma especie, estar seguros de que la secuencia puede ser atribuida a esa especie
+ - Si los matches son de especies del mismo genero, llegar a un consenso a nivel de g'enero...
+ 
+ 
