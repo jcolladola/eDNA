@@ -9,7 +9,10 @@ Try executing this chunk by clicking the *Run* button within the chunk or by pla
 
 ```{r}
 library(readxl)
+library(dplyr)
 library(tidyverse)
+library(rentrez)
+library(XML)
 coincidencias_midori_blast_merged <- read_excel("data/coincidencias_midori_blast_merged.xlsx")
 View(coincidencias_midori_blast_merged)
 ```
@@ -47,5 +50,151 @@ En un caso son muestras de la misma especie, en otro son muestras en las que no 
 En cualquier caso, entre los valores que puedes pedirle a BLAST es que te diga el staxid de la secuencia subida a Genbank, de este modo podriamos hacer dos cosas:
  - si hay dos matches de la misma especie, estar seguros de que la secuencia puede ser atribuida a esa especie
  - Si los matches son de especies del mismo genero, llegar a un consenso a nivel de g'enero...
- 
- 
+
+He estado investigando y parece ser que la opción de no incluir muestras ambientales no está disponible al ejecutar BLAST de manera local.
+Nos quedamos con el mejor BLAST por secuencia (query_id) 
+
+Ordenar por 'query_id', luego por 'identity' y finalmente por 'bit_score' en caso de empate en identidad
+
+```{r}
+sorted_data <- coincidencias_midori_blast_merged %>%
+  arrange(query_id, desc(identity), desc(bit_score))
+```
+
+Mantener solo el mejor resultado por cada 'query_id', pero sin eliminar los que no tienen BLAST
+
+```{r}
+best_blast_per_query_with_midori <- sorted_data %>%
+  group_by(query_id) %>%
+  slice(1)
+```
+
+Con esto conseguimos tener 12000... filas, es decir, un sólo resultado por query id para blast y para midori.
+
+Filtramos secuencias que no tienen NA en 'subject_id'
+
+```{r}
+secuencias_filtradas <- best_blast_per_query_with_midori$subject_id[!is.na(best_blast_per_query_with_midori$subject_id)]
+```
+
+Obtenemos la taxonomía de los resultados de BLAST a partir del subject ID (la he modificado a partir de una función encontrada por IA, me ha funcionado bien). He añadido bastante tiempo de reposo para no saturar la API del NCBI.
+
+```{r}
+secuencias_procesadas <- 0
+get_full_taxonomy <- function(subject_id) {
+  clean_id <- gsub("gi\\|", "", subject_id)  # Elimina el 'gi|' si está presente
+  clean_id <- strsplit(clean_id, "\\|")[[1]][1]  # Extrae solo el ID numérico
+  
+  if (!is.na(clean_id) && clean_id != "") {
+    tax_successful <- FALSE  # Variable para controlar si se ha conseguido obtener la información correctamente
+    
+    while (!tax_successful) {  # Bucle que sigue intentando hasta que sea exitoso
+      tryCatch({
+        # Intento: Obtener el taxid desde la base de datos 'nuccore'
+        tax_data <- entrez_summary(db = "nuccore", id = clean_id)
+        taxid <- tax_data$taxid
+        
+        if (!is.null(taxid)) {
+          # Intentar obtener la taxonomía completa
+          taxonomy_xml <- entrez_fetch(db = "taxonomy", id = taxid, rettype = "xml")
+          
+          # Analizar la respuesta en formato XML
+          taxonomy_parsed <- xmlParse(taxonomy_xml)
+          lineage_nodes <- getNodeSet(taxonomy_parsed, "//LineageEx/Taxon")
+          
+          taxonomy_levels <- list()
+          
+          # Extraer los niveles taxonómicos importantes desde LineageEx
+          for (node in lineage_nodes) {
+            rank <- xmlValue(node[["Rank"]])
+            name <- xmlValue(node[["ScientificName"]])
+            taxonomy_levels[[rank]] <- name
+          }
+          
+          # También extraemos la especie directamente del campo `ScientificName` con el rank `species`
+          species_name <- xpathSApply(taxonomy_parsed, "//Taxon[Rank='species']/ScientificName", xmlValue)
+          taxonomy_levels[["species"]] <- species_name
+          
+          # Definir los niveles de taxonomía que nos interesan
+          levels <- c("superkingdom", "kingdom", "phylum", "class", "order", "family", "genus", "species")
+          
+          # Crear un vector con los valores taxonómicos para estos niveles
+          taxonomy_values <- sapply(levels, function(x) taxonomy_levels[[x]])
+          
+          names(taxonomy_values) <- levels
+          
+          # Marcar el intento como exitoso
+          tax_successful <- TRUE
+          message("Recuperación exitosa de taxonomía para subject_id: ", subject_id)
+          return(taxonomy_values)
+        } else {
+          stop("No se encontró taxid.")
+        }
+      }, error = function(e) {
+        message("Error al recuperar la taxonomía para subject_id: ", subject_id, ". Intentando nuevamente...")
+        Sys.sleep(1)  # Esperar 1 segundo antes de reintentar
+      })
+    }
+  } else {
+    return(rep(NA, 8))  # Retorna NA si no se encuentra el ID limpio
+  }
+}
+
+```
+
+```{r}
+procesar_secuencias <- function(secuencias) {
+  
+  taxonomy_results <- t(sapply(secuencias, function(id) {
+    Sys.sleep(1.5)  # Pausa de 600 ms entre solicitudes para no sobrecargar la API de NCBI
+    
+    # Incrementar el contador global
+    secuencias_procesadas <<- secuencias_procesadas + 1
+    
+    # Mostrar el progreso de secuencias procesadas
+    message("Secuencias procesadas: ", secuencias_procesadas)
+    
+    # Mostrar mensaje especial cada 1000 secuencias
+    if (secuencias_procesadas %% 1000 == 0) {
+      message("Se han procesado 1000 secuencias más. Total hasta ahora: ", secuencias_procesadas)
+    }
+    
+    get_full_taxonomy(id)
+  }))
+  
+  return(taxonomy_results)
+}
+
+```
+
+```{r}
+taxonomy_results <- procesar_secuencias(secuencias_filtradas)
+```
+
+Convertimos el resultado en un DataFrame y lo unimos con el original
+
+```{r}
+taxonomy_df <- as.data.frame(taxonomy_results, stringsAsFactors = FALSE)
+colnames(taxonomy_df) <- c("domain", "kingdom", "phylum", "class", "order", "family", "genus", "species")
+```
+
+Guardamos el nuevo df.
+
+```{r}
+write.xlsx(taxonomy_df, "taxonomy_blast.xlsx")
+```
+
+Nos quedamos con las columnas del DF original que contengan subject_id (resultados blast) y lo combinamos con taxonomy_df.
+
+```{r}
+filtered_data <- best_blast_per_query_with_midori[!is.na(best_blast_per_query_with_midori$subject_id), ]ç
+combined_data <- cbind(filtered_data, taxonomy_df)
+new_rows <- anti_join(best_blast_per_query_with_midori, combined_data, by = "query_id")
+blast_midori_with_taxonomy <- bind_rows(combined_data, new_rows)
+```
+
+Guardamos el df final con la taxonomía de BLAST y de MIDORI en un único csv.
+
+```{r}
+write.csv(blast_midori_with_taxonomy, "blast_midori_with_taxonomy.csv", row.names = FALSE)
+```
