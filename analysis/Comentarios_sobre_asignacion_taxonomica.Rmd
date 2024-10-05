@@ -193,8 +193,23 @@ new_rows <- anti_join(best_blast_per_query_with_midori, combined_data, by = "que
 blast_midori_with_taxonomy <- bind_rows(combined_data, new_rows)
 ```
 
+Eliminamos las columnas no deseadas.
+
+```{r}
+blast_midori_with_taxonomy |> 
+  select (-sample_id, -nReads, -Lago, -`000a`, -`0sample_id`, -`0nReads`, -`0Lago`) |> 
+  distinct() -> unique_hashes
+```
+
+Comprobamos que ya haya el mismo número de hashes que en el df original.
+
+```{r}
+unique_hashes |> 
+  distinct(query_id)
+```
+
 Guardamos el df final con la taxonomía de BLAST y de MIDORI en un único csv.
 
 ```{r}
-write.csv(blast_midori_with_taxonomy, "blast_midori_with_taxonomy.csv", row.names = FALSE)
+write.csv(unique_hashes, "blast_midori_with_taxonomy_unique_hashes.csv", row.names = FALSE)
 ```
