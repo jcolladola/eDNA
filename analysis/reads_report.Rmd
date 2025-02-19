@@ -1,0 +1,132 @@
+---
+title: "Reads_fate_per_run"
+author: "Jesús Collado"
+date: "`r Sys.Date()`"
+output: html_document
+params: 
+  folder: Nica_205_120
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tidyverse)
+library(here)
+
+```
+
+read them all
+
+```{r}
+list.files(here("data",params$folder), pattern = "*.csv") %>% 
+  set_names(., nm=.) |> 
+  map(~read_csv(here("data",params$folder, .x))) -> all_files
+```
+
+Keep only nica
+
+```{r}
+all_files[[3]] |> filter (Project == "Nicaragua") -> all_files[[3]]
+
+```
+
+
+```{r}
+# reduce the dataset
+
+all_files[[1]] |>
+  semi_join(all_files[[3]]) -> all_files[[1]]
+
+all_files[[2]] |> 
+  semi_join(all_files[[1]]) -> all_files[[2]]
+
+all_files[[5]] |> 
+  select(Sample, locus,where(is.numeric) ) |> 
+  semi_join(all_files[[1]]) |> 
+  pivot_longer(where(is.numeric), names_to = "step", values_to = "nReads") -> all_files[[5]]
+
+all_files[[4]] |> 
+  inner_join(all_files[[3]] |>
+               unite(pri_index_name, sec_index_seq, sep = "_", col = "fastq_header") |>
+               select(fastq_header, Sample) ) |> 
+  mutate (nReads = as.numeric(nReads)) |> 
+  bind_rows (all_files[[5]]) |> 
+  mutate (Step = case_when (step == "demultiplexing"      ~ "1.demult",
+                            step == "noprimer_"           ~ "2.primers",
+                            str_starts(step, "filtered")  ~ "3.GoodQ",
+                            str_starts(step, "dada[F|R]1")      ~ "4.Dada",
+                            str_starts(step, "merge")     ~ "5.merge_R1R2",
+                            str_starts(step, "joined")    ~ "6.merge_FR",
+                            str_starts(step, "nochim")    ~ "7.nochim")) |> 
+  group_by(Sample, Step) |> 
+  filter (!is.na(Step)) |> 
+  summarise (nReads = sum(nReads)) -> summary_all
+
+summary_all  %>%
+  ungroup() |> 
+  filter (Step == "1.demult") |> 
+  mutate(facet_group = cut(nReads, 
+                           breaks = quantile(nReads, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE), 
+                           labels = c("Low", "Medium", "High"), 
+                           include.lowest = TRUE)) |> 
+  select(Sample, facet_group)-> df
+
+summary_all |> 
+  inner_join(df) -> all_files[[4]]
+```
+
+
+```{r}
+all_files[[4]] |> 
+  ggplot(aes(x = Step, y = nReads, color = Sample, group = Sample)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~ facet_group, scales = "free_y", ncol = 1) +
+  theme_minimal() +
+  labs(x = "Processing Step", y = "Number of Reads", color = "Sample") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  guides(color= "none") 
+
+ggsave(filename = here("figures",glue::glue("{params$folder}_reads_fate.jpg" ) ))
+```
+
+
+```{r}
+all_files[[4]] |> 
+  
+  filter (Step %in% c("4.Dada", "5.merge_R1R2")) |> 
+  pivot_wider(names_from = Step, values_from = nReads) |> 
+  mutate(Prop = 100*(`5.merge_R1R2`/ `4.Dada`)) |> 
+  ggplot(aes(Prop))+
+  geom_density()+
+  facet_wrap(~facet_group)
+
+
+
+```
+
+A lo mejor todas las reads que perdemos lo son porque el amplicon de la esponja es más largo
+
+
+```{r}
+all_files[[4]] |> 
+  # filter (Step %in% c("4.Dada", "5.merge_R1R2")) |> 
+  group_by(Sample) |> 
+  mutate(Prop = 100*(nReads/ max(nReads))) |> 
+  inner_join(all_files[[3]] |> select(Sample, SampleType)) |> 
+  
+  ggplot(aes(x = Step, y = Prop, color = Sample, group = Sample)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~ SampleType, scales = "free_y", ncol = 1) +
+  theme_minimal() +
+  labs(x = "Processing Step", y = "Number of Reads", color = "Sample") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  guides(color= "none") 
+
+ggsave(filename = here("figures",glue::glue("{params$folder}_proportions_fate.jpg" ) ))
+```

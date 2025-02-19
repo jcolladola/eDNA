@@ -1,0 +1,222 @@
+---
+title: "Parsing BLAST"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+We have successfully BLASTed our sequences and now we want to recover the taxonomical information associated with each search
+
+```{r}
+library(tidyverse)
+library(insect)
+library(taxonomizr)
+```
+
+## DO it once: get the insect::taxonomy
+
+```{r, eval=FALSE}
+taxonomy.now <- insect::taxonomy()
+
+write_rds(taxonomy.now, "../data/taxonomy.rds")
+```
+
+
+
+## Load the blast_output
+
+```{r}
+
+#taxonomy.now <- read_rds("../data/taxonomy.rds")
+taxonomy.now <- read_rds("taxonomy.rds")
+
+#blast_output <- "../pipeline_output/hash_key_221103.txt"
+blast_output <- "hash_key_221103.txt"
+
+BLAST_results <- read_table(blast_output, col_names = c("qseqid", "sseqid",  "pident", "length" ,"mismatch", "gapopen" ,"qstart","qend", "sstart", "send" ,"evalue" ,"bitscore", "staxid", "qlen"))
+
+
+# Many taxids will be repeated, do it only once
+
+BLAST_results %>%
+  separate_rows(staxid, sep = ";") -> BLAST_results
+
+BLAST_results %>%
+distinct(staxid) -> ALL.TAXIDS
+# Bring in those for which we already know
+
+previous.lineages <- read_csv("../data/taxonomies_matches.csv")
+
+# Work only in the new ones
+
+ALL.TAXIDS %>%
+  rename(taxID = 1) %>%
+  mutate(taxID = as.numeric(taxID)) %>%
+  anti_join(previous.lineages) %>%
+   mutate(lineage = map(taxID, insect::get_lineage, taxonomy.now)) -> all.lineages
+
+
+# # Find ids with 2 or more, it takes time in the server
+# 
+# ALL.TAXIDS %>%
+#   filter(! str_detect(staxid, ";")) %>%
+#   mutate(staxid = as.numeric(staxid)) %>%
+#   mutate(lineage = map(staxid, insect::get_lineage, taxonomy.now)) -> all.lineages
+
+# Save this object
+# ALL.TAXIDS = 3872
+
+write_rds(all.lineages, glue::glue("../data/lineages_{Sys.Date()}.rds"))
+
+# Make them into a list
+all.lineages %>%
+  pull(lineage) -> all.lineages.list
+
+set_names(all.lineages.list, nm= all.lineages$staxid) -> all.lineages.list
+
+# Remove entries without taxonomy
+all.lineages.list %>% discard(function(x) is.na(x[[1]]) ) ->  all.lineages.list.good
+
+  all.lineages.list.good %>%
+  map(~ bind_cols(.x) %>% mutate (rank = names(.x)) ) %>%
+  bind_rows(.id = "taxID") %>%
+     filter (rank %in% c( "kingdom", "phylum", "class", "order", "family","genus" , "species")) -> all.lineages.long
+
+
+  ## Rejoin with previous lineage
+  previous.lineages %>%
+    bind_rows(all.lineages.long %>% mutate (taxID = as.numeric(taxID))) %>%
+
+write_csv( file.path("../data/taxonomies_matches.csv"))
+```
+
+```{r}
+custom.lca <- function (df, cutoff = 90) {df %>%  # this function allows to change cutoff parameters for a specified dataframe (df)
+  group_by(qseqid) %>%
+  select( pident, kingdom, phylum, class, order, family, genus, species) %>%
+  nest() %>% # for each query, calculate the agreed taxonomy
+  # ungroup %>% slice (1:10) %>%
+  mutate(consensus = purrr::map(data,  function(.x) {
+    # If there are 100% matches - keep those and calculate the LCA
+   
+    if (max(.x$pident == 100 )){
+       .x %>%
+        filter(pident == 100) %>%
+        select(-pident) %>%
+        condenseTaxa() %>% # agreement in Phylogeny
+      paste(., collapse = "%")
+      
+    }else{
+       # If there are no 100% matches, then keep things better than our cutoff
+    if(max(.x$pident > cutoff )){
+
+      .x %>%
+        filter(pident > cutoff) %>%
+        select(-pident) %>%
+        condenseTaxa() %>% # agreement in Phylogeny
+      paste(., collapse = "%")
+
+       
+
+    }else{
+      # If there are no matches, better than the cutoff, then keep everything
+      
+    .x %>%
+        select(-pident) %>%
+    condenseTaxa() %>%
+       paste(., collapse = "%")
+      }
+  }
+  }
+  
+  # Collapse all the taxa data separatated by %, como queda feo para leer en excel lo modificamos con # PERO es un lio dejarlo sin el % porq deja la table separada sin heads asi que mejor dejarlo como esta y luego en R separar las columnas por % y asignarles nombres
+  
+  )) %>%
+  select(qseqid, consensus) %>%
+  unnest(consensus)}
+
+```
+
+
+## Apply the function to our data
+
+```{r}
+all.lineages.long <- read_csv("../data/taxonomies_matches.csv")
+all.lineages.long %>%
+  rename(name = 2) %>%
+  group_by(taxID, rank) %>%
+  tally() %>%
+  filter (n>1) %>%
+  distinct(taxID) %>%
+  inner_join(BLAST_results %>% mutate (taxID = as.numeric(staxid))) %>%
+  ungroup() %>%
+  distinct(qseqid) %>%
+  inner_join(BLAST_results)
+
+## From all this, we can dismiss the two staxid for which we have two filogenies
+  all.lineages.long %>%
+  # rename(name = 2) %>%
+  group_by(taxID, rank) %>%
+  tally() %>%
+  filter (n==1) %>%
+    select(-n) %>%
+    inner_join(all.lineages.long,.) %>%
+
+pivot_wider(names_from = rank, values_from = 2)-> readytojoin
+```
+3731 taxID and 8 collumns
+lo que no tengo lineage information se remueve con el inner_join. Perdemos la informacion de algunos
+BLAST_results %>% anti_join(readytojoin,by=c("staxid"="taxID")) -> para tener la info de los sin lineage information
+Luego se puede explorar la informacion que hay dentro de los sin lineage BLAST_results %>% anti_join(readytojoin,by=c("staxid"="taxID")) %>% distinct(staxid) y me dio 141 hits. Que son muestras con problemas en el taxaid que tienen ; y contamos los casos y la mayoria se encuentran con dos o tres opciones de id lineage info por eso nos da error en el consensus ya que tiene diferencias.
+
+
+```{r}
+
+BLAST_results %>%
+  mutate(taxID = as.numeric(staxid)) %>%
+  inner_join(readytojoin %>%
+  mutate(taxID = as.numeric(taxID))) -> input
+
+# Store the max pident observed per qseqid
+
+input |> 
+  group_by(qseqid) |> 
+  summarise (max_pident = max(pident)) -> max_pidents
+
+
+custom.lca(input,95) -> finalids
+
+finalids %>%
+  separate(consensus, into = c("kingdom", "phylum", "class", "order", "family", "genus", "species"), sep = "%") %>%
+   inner_join(max_pidents) |> 
+  rename(Hash = 1) %>%
+ 
+  write_csv("../pipeline_output/hash_classified_95_100.csv")
+```
+
+```{r}
+thresholds <- list(100, 97, 95)
+map(thresholds, ~custom.lca( input, .x)) -> ids_thresholds
+
+output.summary <- function(tibble){
+  
+  tibble %>% 
+    rename(Hash =1) %>% 
+    separate(consensus, into = c("kingdom", "phylum", "class", "order", "family", "genus", "species"), sep = "%") %>% 
+    # pivot_longer(-Hash, names_to = "rank", values_to = "name") %>% 
+    mutate (final_rank = case_when(species != "NA" ~ "species",
+                                   genus != "NA" ~ "genus",
+                                   TRUE          ~ "Worse")) %>% 
+    group_by(final_rank) %>% 
+    tally()
+}
+
+map(ids_thresholds, output.summary)
+
+## Write_ 100 to spp
+map(list("95"=finalids), output.summary)
+
+ids_thresholds[[1]] %>% 
+  rename(Hash =1) 
+```
+

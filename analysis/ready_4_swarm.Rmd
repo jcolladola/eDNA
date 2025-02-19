@@ -1,0 +1,62 @@
+---
+title: "Ready4swarm"
+output: html_notebook
+params:
+  folder:
+    value: ../good_output/tolerant
+---
+
+Create a list of fastas with all the hashes per sample, and with the format required by swarm
+
+```{r}
+library(tidyverse)
+library(eDNAfuns)
+library(here)
+```
+
+```{r}
+ASV_table <- read_csv(here("data/ASV_nicaragua_after_vsearch.csv"))
+Hash <- read_csv(here("data/hash_key_nica.csv"))
+
+semi_join(Hash, ASV_table)
+
+ASV_table |> 
+  group_by(sample_id) |> 
+  inner_join(Hash) |> 
+  unite(Hash, nReads, col = "header", sep = ";size=") |> 
+  nest() |> 
+  mutate (write = walk2(sample_id, data, function (.x, .y){
+    
+    .y |> 
+      eDNAfuns::fasta_writer(sequence = seqs,
+                   header = header, 
+                   file.out =file.path(here("data"),"swarm_input" ,paste0(.x, ".fasta")))
+  }))
+
+```
+
+
+## parsing Swarm output
+
+```{r}
+centroids.paths <- list.files(file.path(params$folder,"swarm_input","centroids"),
+                              pattern = "centroids.fasta") 
+map(centroids.paths, ~insect::readFASTA(file.path(params$folder,"swarm_input","centroids", .x), bin = F)) -> seqs.centroids
+
+seqs.centroids |> 
+  map(~tibble(names = names(.x), seqs = .x)) |> 
+  set_names(nm= centroids.paths)-> centroids
+
+centroids |>
+  bind_rows(.id = "sample") |> 
+  separate(names, into = c("Hash", "nReads"), sep = ";size=|;", convert = T) |> 
+  mutate(sample = str_remove(sample, ".centroids.fasta")) -> new_ASV
+
+ASV_table |> ungroup() |> summarise(sum(nReads), n_distinct(Hash))
+
+
+new_ASV |> summarise(sum(nReads), n_distinct(Hash))
+
+new_ASV |> select(sample, Hash, nReads) |> write_csv(file.path(params$folder, "new_ASV_after_swarm.csv")) 
+```
+

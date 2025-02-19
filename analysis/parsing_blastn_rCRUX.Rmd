@@ -1,0 +1,160 @@
+---
+title: "Parsing BLAST"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+params:
+  blast:
+    value: "output.txt"
+  taxonomy.db: 
+    value: ""
+  locus:
+    value: ""
+  experiment:
+    value: ""
+---
+
+We have successfully BLASTed our sequences and now we want to recover the taxonomical information associated with each search
+
+```{r}
+library(tidyverse)
+library(insect)
+library(taxonomizr)
+library(future)
+library(furrr)
+```
+
+
+
+
+
+## Load the blast_output
+
+```{r}
+taxonomy.now <- read_delim(params$taxonomy.db, 
+     delim = "\t") 
+
+# blast_output <- "../pipeline_output/hash_key_221103.txt"
+# blast_output <- here("data", "blastp_output",params$blast)
+
+BLAST_results <- read_table(params$blast, col_names = c("qseqid", "accession",  "pident", "length" ,"mismatch", "gapopen" ,"qstart","qend", "sstart", "send" ,"evalue" ,"bitscore"))
+```
+
+There are some formatting issues with the BLAST headers, let's solve that
+```{r}
+BLAST_results |>
+  mutate(accession = str_remove_all(accession, "gb\\||\\|$"),
+         accession = str_remove_all(accession, "emb|dbj|ref|tpg|tpe|\\|"))-> BLAST_results
+
+
+
+
+```
+
+Keep the taxonomy db as the bare minimum needed
+
+```{r}
+taxonomy.now |> 
+  semi_join(BLAST_results) |> 
+  mutate(n_NA=str_count(taxonomic_path, ";NA")) -> taxonomy.useful 
+  
+taxonomy.useful |> 
+  group_by(n_NA) |> tally()
+
+```
+Keep only things with 0 or 1 NAs
+
+```{r}
+BLAST_results |> 
+  inner_join(taxonomy.useful) -> readish
+
+readish |> 
+  filter (n_NA < 2) -> readish
+```
+Now everything has the taxa info, the pident and length 
+
+
+```{r}
+taxonomy_cols <- c("kingdom", "phylum", "class", "order", "family", "genus", "species")
+```
+
+```{r}
+custom.lca <- function (df, cutoff = 90) {df %>%  # this function allows to change cutoff parameters for a specified dataframe (df)
+  group_by(qseqid) %>%
+  select( pident, kingdom, phylum, class, order, family, genus, species) %>%
+  nest() %>% # for each query, calculate the agreed taxonomy
+  # ungroup %>% slice (1:10) %>%
+  mutate(consensus = purrr::map(data,  function(.x) {
+    # If there are 100% matches - keep those and calculate the LCA
+   
+    if (max(.x$pident == 100 )){
+       .x %>%
+        filter(pident == 100) %>%
+        select(-pident) %>%
+        condenseTaxa() %>% # agreement in Phylogeny
+      paste(., collapse = "%")
+      
+    }else{
+       # If there are no 100% matches, then keep things better than our cutoff
+    if(max(.x$pident > cutoff )){
+
+      .x %>%
+        filter(pident > cutoff) %>%
+        select(-pident) %>%
+        condenseTaxa() %>% # agreement in Phylogeny
+      paste(., collapse = "%")
+
+       
+
+    }else{
+      # If there are no matches, better than the cutoff, then keep everything
+      
+    .x %>%
+        select(-pident) %>%
+    condenseTaxa() %>%
+       paste(., collapse = "%")
+      }
+  }
+  }
+  
+  # Collapse all the taxa data separatated by %, como queda feo para leer en excel lo modificamos con # PERO es un lio dejarlo sin el % porq deja la table separada sin heads asi que mejor dejarlo como esta y luego en R separar las columnas por % y asignarles nombres
+  
+  )) %>%
+  select(qseqid, consensus) %>%
+  unnest(consensus)}
+
+```
+
+
+## Apply the function to our data
+
+
+```{r}
+
+
+# Store the max pident observed per qseqid
+
+readish |> 
+  group_by(qseqid) |> 
+  summarise (max_pident = max(pident),
+             max_length = max(length)) -> max_pidents
+
+readish |> 
+  separate(taxonomic_path, into = taxonomy_cols, sep =";") -> input
+
+# This should take ~2 seconds running in parallel, with a little overhead
+# in `future_map()` from sending data to the workers. There is generally also
+# a one time cost from `plan(multisession)` setting up the workers.
+plan(multisession, workers = 8)
+
+ future_map(list(`95`=input), ~custom.lca(.x, 95)) -> finalids
+
+finalids [[1]] |> 
+  separate(consensus,
+           into = taxonomy_cols, sep = "%")  |> 
+   inner_join(max_pidents) |> 
+  rename(read_id = 1) |>  
+ 
+  write_csv(glue::glue("comparing_loci/Locus_{params$locus}_experiment{params$experiment}_classified_blast_95_100_noNAs.csv"))
+```
+

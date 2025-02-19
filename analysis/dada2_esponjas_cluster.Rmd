@@ -1,0 +1,71 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library(tidyverse)
+library(here)
+
+library(dada2)
+```
+
+Encontrar todas las muestras
+
+```{r}
+base_dir <- "/home/meg/jcollado/data"
+
+list.samples <- tibble (sample = list.dirs(base_dir, full.names = T)) |> 
+  filter (str_detect(sample, "Nicaragua")) |>
+  filter (!str_detect(sample, "filtered")) |> 
+  mutate (R1 = file.path(sample, "with_primer.R1.fastq"),
+          R2 = file.path(sample, "with_primer.R1.fastq")) 
+
+
+```
+
+
+
+Escoger una muestra
+
+
+
+
+Filter and Trim
+
+```{r}
+ list.samples |> 
+  mutate (filtf1 = file.path(sample, "filtered/with_primer.R1.fastq"),
+          filtf2 = file.path(sample, "filtered/with_primer.R2.fastq")) |> 
+  mutate (outFs = pmap_dfr(.l= list (R1, filtf1, R2, filtf2),
+                       .f = function(a, b, c, d) {
+                         filterAndTrim(a,b,c,d,
+                                       
+                                        truncLen=c(100,175),
+                                       maxN=0, maxEE=c(2,2), rm.phix=TRUE) %>% 
+                           as.data.frame()
+                       } )) -> list.samples 
+```
+
+
+```{r}
+error_r1 <- learnErrors(list.samples$filtf1[1])
+error_r2 <- learnErrors(list.samples$filtf2[1])
+```
+```{r}
+list.samples |> 
+  mutate(derepF1 = map(filtF1, derepFastq),                   # dereplicate seqs
+          derepR1 = map(filtR1, derepFastq),
+          dadaF1  = map(derepF1, ~ dada(.x, err = error_r1, multithread = F)),  # dada2
+          dadaR1  = map(derepR1, ~ dada(.x, err = error_r2, multithread = F)),
+          mergers = pmap(.l = list(dadaF1,derepF1, dadaR1,derepR1),                 # merge things
+                         .f = mergePairs,
+                         minOverlap = 10)) -> output.dada2
+
+output.dada2 |> write_rds(file.path(base_dir, "dada2.rds"))
+```
+
