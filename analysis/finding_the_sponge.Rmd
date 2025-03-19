@@ -1,0 +1,39 @@
+---
+title: "Finding the sponge"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library(tidyverse)
+library(here)
+library(eDNAfuns)
+```
+
+
+Load the ¡240_140 dataset
+
+```{r}
+ASV_table <-  read_csv(here("data/Nica_240_140/ASV_table.csv"))
+Hashes    <- read_csv(here("data/Nica_240_140/Hash_key.csv"))
+metadata  <- read_csv(here("data/Nica_240_140/metadata.csv"))
+```
+
+```{r}
+metadata |> 
+  select(Sample, SampleType) |> 
+  inner_join(ASV_table) |> 
+  filter (SampleType == "FreshWaterSponge") |> 
+  group_by(Sample) |> 
+  arrange(desc(nReads)) |> 
+  slice (1:2) |> 
+  ungroup() |> 
+  distinct(Hash) |> 
+  inner_join(Hashes) |> 
+  mutate(len = str_length(sequence)) |> 
+  eDNAfuns::fasta_writer(sequence = sequence, header = Hash, file.out = here("data/sponge_candidates.fasta"))
+```
+

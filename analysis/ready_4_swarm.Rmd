@@ -1,9 +1,10 @@
 ---
 title: "Ready4swarm"
+author: "Ramon Gallego"
 output: html_notebook
-params:
-  folder:
-    value: ../good_output/tolerant
+date: "`r Sys.Date()`"
+params: 
+  folder: data/Nica_215_125
 ---
 
 Create a list of fastas with all the hashes per sample, and with the format required by swarm
@@ -14,23 +15,27 @@ library(eDNAfuns)
 library(here)
 ```
 
-```{r}
-ASV_table <- read_csv(here("data/ASV_nicaragua_after_vsearch.csv"))
-Hash <- read_csv(here("data/hash_key_nica.csv"))
+```{r, eval=F}
+ASV_table <- read_csv(here(params$folder, "ASV_table.csv"))
+Hash <- read_csv(here(params$folder, "Hash_key.csv"))
+```
 
+
+```{r, eval= F}
+dir.create(here(params$folder, "swarm_input"))
 semi_join(Hash, ASV_table)
 
 ASV_table |> 
-  group_by(sample_id) |> 
+  group_by(Sample) |> 
   inner_join(Hash) |> 
   unite(Hash, nReads, col = "header", sep = ";size=") |> 
   nest() |> 
-  mutate (write = walk2(sample_id, data, function (.x, .y){
+  mutate (write = walk2(Sample, data, function (.x, .y){
     
     .y |> 
-      eDNAfuns::fasta_writer(sequence = seqs,
+      eDNAfuns::fasta_writer(sequence = sequence,
                    header = header, 
-                   file.out =file.path(here("data"),"swarm_input" ,paste0(.x, ".fasta")))
+                   file.out =here(params$folder,"swarm_input" ,paste0(.x, ".fasta")))
   }))
 
 ```
@@ -38,10 +43,10 @@ ASV_table |>
 
 ## parsing Swarm output
 
-```{r}
-centroids.paths <- list.files(file.path(params$folder,"swarm_input","centroids"),
+```{r, eval = F}
+centroids.paths <- list.files(here(params$folder,"swarm_input","centroids"),
                               pattern = "centroids.fasta") 
-map(centroids.paths, ~insect::readFASTA(file.path(params$folder,"swarm_input","centroids", .x), bin = F)) -> seqs.centroids
+map(centroids.paths, ~insect::readFASTA(here(params$folder,"swarm_input","centroids", .x), bin = F)) -> seqs.centroids
 
 seqs.centroids |> 
   map(~tibble(names = names(.x), seqs = .x)) |> 
@@ -57,6 +62,22 @@ ASV_table |> ungroup() |> summarise(sum(nReads), n_distinct(Hash))
 
 new_ASV |> summarise(sum(nReads), n_distinct(Hash))
 
-new_ASV |> select(sample, Hash, nReads) |> write_csv(file.path(params$folder, "new_ASV_after_swarm.csv")) 
+new_ASV |> select(sample, Hash, nReads) |> write_csv(here(params$folder, "new_ASV_after_swarm.csv")) 
+
+new_ASV |> 
+  distinct(Hash, seqs) |> 
+  write_csv(here(params$folder, "new_Hash_key_after_swarm.csv"))
+
+new_ASV |> 
+  distinct(Hash, seqs) |> 
+  eDNAfuns::fasta_writer(sequence = seqs, header = Hash, file.out = here(params$folder, "new_Hash_key_after_swarm.fasta"))
+
+centroids |>
+  bind_rows() |> 
+  separate(names, into = c("Hash", "nReads"), sep = ";size=|;", convert = T) |> 
+  group_by(Hash, seqs) |> 
+  summarise(nReads = sum(nReads))  |> 
+  unite(Hash, nReads, col = "header", sep = ";size=") |> 
+  fasta_writer(sequence = seqs, header = header, file.out = here(params$folder,"vsearch_input.fasta"))
 ```
 

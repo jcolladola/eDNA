@@ -1,0 +1,80 @@
+---
+title: "Compare trimming outputs"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(here)
+
+```
+```{r}
+Hash_nica_default <- read_csv(here("data/hash_key_nica.csv"))
+
+Hash_nica_default |> 
+  mutate(len = str_length(seqs)) |> 
+  ggplot(aes(x = len))+
+  geom_density()
+```
+```{r}
+Hash_240_140 <- read_csv(here("data/Nica_240_140/Hash_key.csv"))
+
+Hash_240_140|> 
+  mutate(len = str_length(sequence)) |> 
+  ggplot(aes(x = len))+
+  geom_density()
+
+Hash_240_140|> 
+  mutate(len = str_length(sequence)) |> 
+  filter(len == 352) -> LONGER_SEQS
+```
+
+
+```{r}
+ASV_table <- read_csv(here("data/Nica_240_140/ASV_table.csv"))
+
+ASV_table |> 
+  group_by(Hash) |> 
+  summarise(nReads = sum(nReads), n= n()) -> summ_hashes
+
+Hash_240_140 |> 
+  inner_join(summ_hashes) |> 
+  mutate(len = str_length(sequence)) |> 
+  filter (len == 352) |> 
+  arrange(desc(nReads)) |> 
+  slice(1:10) |> 
+  eDNAfuns::fasta_writer(sequence = sequence, header = Hash, file.out = here("data/test_long_seqs.fasta"))
+
+```
+
+## Are we losing hashes
+
+```{r}
+Hash_nica_default |> 
+  anti_join(Hash_240_140) |>  
+  mutate(len = str_length(seqs)) |> 
+   ggplot(aes(x = len))+
+  geom_density()
+
+Hash_240_140 |> 
+  anti_join(Hash_nica_default) |>  
+  mutate(len = str_length(sequence)) |> 
+   ggplot(aes(x = len))+
+  geom_density()
+
+Hash_215_125 <- read_csv(here("data/Nica_215_125/Hash_key.csv"))
+
+Hash_240_140 |> 
+  anti_join(Hash_215_125) |>  
+  mutate(len = str_length(sequence)) |> 
+   ggplot(aes(x = len))+
+  geom_density()
+
+
+Hash_215_125 |> 
+  anti_join(Hash_240_140) |>  
+  mutate(len = str_length(sequence)) |> 
+   ggplot(aes(x = len))+
+  geom_density()
+```
+

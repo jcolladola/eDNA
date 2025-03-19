@@ -66,7 +66,7 @@ Keep only things with 0 or 1 NAs
 
 ```{r}
 BLAST_results |> 
-  inner_join(taxonomy.useful) -> readish
+  inner_join(taxonomy.now) -> readish
 
 readish |> 
   filter (n_NA < 2) -> readish
@@ -156,5 +156,14 @@ finalids [[1]] |>
   rename(read_id = 1) |>  
  
   write_csv(glue::glue("comparing_loci/Locus_{params$locus}_experiment{params$experiment}_classified_blast_95_100_noNAs.csv"))
+```
+sin future map , pls
+
+```{r}
+list (95, 97, 99) -> thresholds
+
+thresholds |> 
+  set_names(nm= thresholds) |> 
+  map(~custom.lca(df= input, cutoff = .x)) -> ids_sponges
 ```
 

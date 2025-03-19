@@ -1,0 +1,58 @@
+---
+title: "Train COI Classifier Qiime2"
+author: "Jesús"
+date: "2025-03-03"
+output: html_document
+---
+
+Previamente QIIME2 debe estar instalado en el Cluster o en el ordenador a utilizar.
+
+## Importar base de datos de Midori a un formato adecuado para QIIME2.
+
+Importamos las secuencias de la base de datos de MIDORI2 en QIIME2.
+```{bash}
+
+qiime tools import \
+  --type 'FeatureData[Sequence]' \
+  --input-path MIDORI2_UNIQ_NUC_GB264_CO1_QIIME.fasta \
+  --output-path midori_sequences.qza
+  
+```
+
+Importamos la taxonomía de la base de datos de MIDORI2.
+
+```{bash}
+
+qiime tools import \
+  --type 'FeatureData[Taxonomy]' \
+  --input-format HeaderlessTSVTaxonomyFormat \
+  --input-path MIDORI2_UNIQ_NUC_GB264_CO1_QIIME.taxon \
+  --output-path midori_taxonomy.qza
+  
+```
+
+## Entrenar clasificador bayesiano.
+
+```{bash}
+
+qiime feature-classifier fit-classifier-naive-bayes \
+  --i-reference-reads midori_sequences.qza \
+  --i-reference-taxonomy midori_taxonomy.qza \
+  --o-classifier midori-coi-classifier.qza
+
+```
+
+## Verificar tamaño y detalles del entrenador clasificado.
+
+```{bash}
+
+ls -lh midori-coi-classifier.qza
+qiime tools peek midori-coi-classifier.qza
+
+```
+
+El siguiente paso es importar las secuencias (hash_key_nica) en formato apto para QIIME2 y realizar la asignación taxonómica.
+
+
+
+
