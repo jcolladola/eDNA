@@ -11,7 +11,7 @@ params:
     value: 2mismatches
     input: text
   file2:
-    value: ~/Projects/Alumnado/eDNA_jesus_collado/data/UNOISE_March_2025/seqlens_10mismatches.txt
+    value: ~/Projects/Alumnado/eDNA_jesus_collado/data/UNOISE_March_2025/lengths_noprimers.txt
     input: file
   name2:
     value: default
@@ -30,7 +30,7 @@ knitr::opts_chunk$set(warning  = FALSE)
 Given two sets of fasta or fastq files, one might be interested in the lengths distributions. You need to calculate those with `awk`, with the following code
 
 ```
-awk 'NR%2==1 {print FILENAME, length}' <fasta set 1> | sort | uniq -c > <summary_file_1>
+awk 'NR%2==0 {print FILENAME, length}' <fasta set 1> | sort | uniq -c > <summary_file_1>
 
 awk 'NR%4==2 {print FILENAME, length}' <fastq set 1> | sort | uniq -c > <summary_file_1>
 
@@ -60,6 +60,29 @@ set1 |>
   bind_rows(set2) |> 
   ggplot(aes(x = length, y = times)) +
   geom_col()+
-  facet_wrap(~topic, ncol = 1)
+  facet_wrap(~topic, ncol = 2)
+
+set2 |> 
+  ggplot(aes(x = length, y = times)) +
+  geom_col()+
+  facet_wrap(~topic, ncol = 2)
+```
+
+```{r}
+set1 |> 
+  filter (str_detect(filename, "PCR4")) |> 
+  distinct(filename) |> 
+  slice (1:8) -> test_dataset
+
+test_dataset |> 
+  separate(filename, into = c("Sample", "dir"), sep = "_Locus_COI_", remove = F) |> 
+  mutate(Sample = str_remove(Sample, "midfiles/PCR4_"),
+         dir = str_remove(dir, ".merged.fasta")) -> test_dataset
+
+test_dataset |> 
+  inner_join(set1) |> 
+  ggplot(aes(x = length, y = times)) +
+  geom_col()+
+  facet_grid(Sample~dir)
 ```
 
