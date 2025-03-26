@@ -1,0 +1,48 @@
+---
+title: "Refformatting rCUX for SYNTAX"
+output: html_notebook
+---
+
+One script to reformat the db from RCRUX so it is  compatible with SYNTAX 
+
+```{r}
+library(tidyverse)
+library(eDNAfuns)
+```
+
+
+El objetivo es
+`>AB008314;tax=d:Bacteria,p:Firmicutes,c:Bacilli,o:Lactobacillales,
+  f:Streptococcaceae,g:Streptococcus;`
+  
+```{r}
+RCRUX <- fasta_reader(here("../../ddbb/CO1_combined/derep_and_clean_db/CO1_combined_derep_and_clean.fasta")) 
+
+RCRUX_tax <- vroom::vroom(file= here("../../ddbb/CO1_combined/derep_and_clean_db/CO1_combined_derep_and_clean_taxonomy.txt"), col_names = c("header", "tax"), delim = "\t") 
+
+RCRUX_tax 
+
+taxonomy_cols <- c("k", "p", "c", "o", "f", "g", "s")
+
+RCRUX_tax |> 
+  separate(tax, into= taxonomy_cols, sep = ";") |> 
+  pivot_longer(-header, names_to = "rank", values_to = "value" ) |> 
+  unite(rank, value, sep = ":", col= "taxa") |> 
+  mutate(header2="taxa") |> 
+  pivot_wider(id_cols = header, values_from = taxa, names_from =header2, values_fn = {~paste(.x, collapse = ",")} ) |> 
+  mutate(taxa= paste0(taxa, ";")) |> 
+  inner_join(RCRUX) |> 
+  unite(header, taxa, col= "header", sep = ";tax=") |> 
+  fasta_writer(header = header, sequence = seq, file.out = "data/rCRUX_for_SYNTAX.fasta")
+
+
+```
+
+  
+  
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
