@@ -1,0 +1,11 @@
+Reason	Explanation
+1	Species-level match at 99%
+2	Species-level match at 97%
+3	Species match at 95%, downgraded
+4	Genus-level match at 99%
+5	Genus-level match at 97%
+6	Genus match at 95%, downgraded
+7	Family-level match at 99%
+8	Family-level match at 97%
+9	Family match at 95%
+10	No family match, downgraded to 90%
