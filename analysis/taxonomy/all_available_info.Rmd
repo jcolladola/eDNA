@@ -132,8 +132,10 @@ all_identifications |>
   
 baddies |> 
   distinct(Hash) -> at_least_one
+```
 
 
+```{r}
 baddies |> 
   select(Hash, db) |>
   group_by(Hash) |> 
@@ -149,5 +151,41 @@ all_identifications |>
   mutate(rank = fct_relevel(rank, c("Species", "Genus", "Family", "Order", "Worse"))) |> 
   ggplot(aes(x = db, y = nHashes, fill = rank)) +
   geom_col(color = "black")
+```
+```{r}
+all_identifications |> 
+  mutate (precision = fct_relevel(precision, c("Species", "Genus", "Family", "Order", "Worse"))) |> 
+  group_by(Hash) |> 
+  arrange(precision) |> 
+  slice(1) |> 
+  ungroup() |> 
+  mutate (db = "best combo") -> best
+
+
+all_identifications |> 
+  bind_rows(best) |> 
+  anti_join(all_NAs) |> 
+  eDNAfuns::tally_wide(rows = db,  cols = precision) |> 
+  select(db, Species, Genus, Family, Order, Worse) |> 
+  pivot_longer(-db, names_to = "rank", values_to = "nHashes") |> 
+  mutate(rank = fct_relevel(rank, c("Species", "Genus", "Family", "Order", "Worse"))) |> 
+  ggplot(aes(x = db, y = nHashes, fill = rank)) +
+  geom_col(color = "black")
+
+
+```
+
+To keep the trace of which database gave us the best answer, keep that info
+```{r}
+all_identifications |> 
+  mutate (precision = fct_relevel(precision, c("Species", "Genus", "Family", "Order", "Worse"))) |> 
+  group_by(Hash) |> 
+  arrange(precision) |> 
+  slice(1) |> 
+  ungroup() |>
+  mutate(taxa = case_when(    str_count(taxa, "%") == 6 ~ sub("^.*?%", "", taxa), # Remove characters until and including the first "%"
+    TRUE ~ taxa
+  )) |> 
+  write_tsv(here("data/taxonomy_outputs/final_best_id.tsv"))
 ```
 
