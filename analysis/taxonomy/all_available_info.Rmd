@@ -1,0 +1,153 @@
+---
+title: "Sintax MIDORI vs SINTAX rCRUX"
+output: html_notebook
+---
+
+SINTAX shows the outputs in a different format
+
+```{r}
+library(tidyverse)
+library(here)
+```
+
+Load the 2 outptus
+
+```{r}
+SINTAX_rCRUX <- read_csv(here("data/taxonomy_outputs/sintax/asignacion_taxonomica_sintax_rcrux_new_hash_after_swarm_030525.csv")) |> filter (!is.na(Hash))
+
+SINTAX_MIDORI <- read_csv(here("data/taxonomy_outputs/sintax/asignacion_taxonomica_sintax_midori_new_hash_after_swarm_270325.csv")) |> filter (!is.na(Hash))
+
+SINTAX_MIDORI |> 
+  filter (!is.na(species))
+
+SINTAX_rCRUX |> 
+  filter (!is.na(species))
+```
+
+Parse to a similar format of LCA
+
+```{r}
+SINTAX_rCRUX |> 
+  mutate(across(c(2:8),~ str_remove(as.character(.x), "^[a-z]:"))) |> 
+  unite(-Hash,  col= "taxa", sep = "%") |> 
+  mutate (precision = case_when(str_detect(taxa, "NA%NA%NA%NA$") ~ "Worse",
+                                str_detect(taxa, "NA%NA%NA$") ~ "Order",
+                                str_detect(taxa, "NA%NA$") ~ "Family",
+                                str_detect(taxa, "NA$") ~ "Genus",
+                                TRUE                    ~ "Species")) -> SINTAX_rCRUX
+
+SINTAX_MIDORI |> 
+  mutate(across(c(2:8),~ str_remove(as.character(.x), "^[a-z]:"))) |>
+  mutate(across(c(2:8),~ str_remove(as.character(.x), "_[0-9]*$"))) |>
+  unite(-Hash,  col= "taxa", sep = "%") |> 
+  mutate (precision = case_when(str_detect(taxa, "NA%NA%NA%NA$") ~ "Worse",
+                                str_detect(taxa, "NA%NA%NA$") ~ "Order",
+                                str_detect(taxa, "NA%NA$") ~ "Family",
+                                str_detect(taxa, "NA$") ~ "Genus",
+                                TRUE                    ~ "Species")) -> SINTAX_MIDORI
+
+
+```
+
+Bring in the taxonomical ids from BLAST
+
+```{r}
+BLAST_BOLD <- read_tsv(here("data","taxonomy_outputs", "final_ids_BOLD.tsv")) |>  mutate (db = "BOLD_BLAST") |> 
+  mutate (precision = case_when(str_detect(final_id, "NA%NA%NA%NA$") ~ "Worse",
+                                str_detect(final_id, "NA%NA%NA$") ~ "Order",
+                                str_detect(final_id, "NA%NA$") ~ "Family",
+                                str_detect(final_id, "NA$") ~ "Genus",
+                                TRUE                    ~ "Species"))
+BLAST_MIDORI <- read_tsv(here("data","taxonomy_outputs", "final_ids_MIDORI.tsv")) |>  mutate (db = "MIDORI_BLAST") |> 
+  mutate (precision = case_when(str_detect(final_id, "NA%NA%NA%NA$") ~ "Worse",
+                                str_detect(final_id, "NA%NA%NA$") ~ "Order",
+                                str_detect(final_id, "NA%NA$") ~ "Family",
+                                str_detect(final_id, "NA$") ~ "Genus",
+                                TRUE                    ~ "Species"))
+BLAST_rCRUX <- read_tsv(here("data","taxonomy_outputs", "final_ids_rCRUX.tsv")) |>  mutate (db = "rCRUX_BLAST") |> 
+  mutate (precision = case_when(str_detect(final_id, "NA%NA%NA%NA$") ~ "Worse",
+                                str_detect(final_id, "NA%NA%NA$") ~ "Order",
+                                str_detect(final_id, "NA%NA$") ~ "Family",
+                                str_detect(final_id, "NA$") ~ "Genus",
+                                TRUE                    ~ "Species"))
+
+
+BLAST_BOLD |> 
+  distinct(qseqid) |> 
+  full_join((BLAST_MIDORI |> 
+               distinct(qseqid))) |> 
+  full_join(BLAST_rCRUX |> 
+              distinct(qseqid)) |> 
+  full_join(SINTAX_MIDORI |> 
+              select(qseqid= Hash)) |> 
+  full_join(SINTAX_rCRUX |> 
+              select(qseqid = Hash)) -> all_hashes
+
+
+
+BLAST_BOLD |> 
+  full_join(all_hashes) |> 
+  replace_na(list (final_id = "NA%NA%NA%NA%NA%NA",
+                   reason   = 11,
+                   db = "BOLD_BLAST",
+                   precision = "Worse")) -> BLAST_BOLD
+  
+
+BLAST_MIDORI |> 
+  full_join(all_hashes) |> 
+  replace_na(list (final_id = "NA%NA%NA%NA%NA%NA",
+                   reason   = 11,
+                   db = "MIDORI_BLAST",
+                   precision = "Worse")) -> BLAST_MIDORI
+
+BLAST_rCRUX |> 
+  full_join(all_hashes) |> 
+  replace_na(list (final_id = "NA%NA%NA%NA%NA%NA",
+                   reason   = 11,
+                   db = "rCRUX_BLAST",
+                   precision = "Worse")) -> BLAST_rCRUX
+
+
+BLAST_BOLD |> 
+  bind_rows(BLAST_MIDORI) |> 
+  bind_rows(BLAST_rCRUX) |> 
+  rename(Hash = qseqid,taxa = final_id) |> 
+  bind_rows(SINTAX_MIDORI|>  mutate (db = "MIDORI_SINTAX")) |> 
+  bind_rows(SINTAX_rCRUX|>  mutate (db = "rCRUX_SINTAX")) -> all_identifications
+  
+
+all_identifications |> 
+  eDNAfuns::tally_wide(rows = db,  cols = precision) |> 
+  select(db, Species, Genus, Family, Order, Worse) |> 
+  pivot_longer(-db, names_to = "rank", values_to = "nHashes") |> 
+  mutate(rank = fct_relevel(rank, c("Species", "Genus", "Family", "Order", "Worse"))) |> 
+  ggplot(aes(x = db, y = nHashes, fill = rank)) +
+  geom_col(color = "black")
+```
+Remove all Hashes that are NAs for all categories
+
+```{r}
+all_identifications |> 
+  filter(str_detect(taxa, "NA%NA%NA%NA%NA")) -> baddies
+  
+baddies |> 
+  distinct(Hash) -> at_least_one
+
+
+baddies |> 
+  select(Hash, db) |>
+  group_by(Hash) |> 
+  tally() |> 
+  filter (n==5) |> 
+  distinct(Hash) -> all_NAs
+  
+all_identifications |> 
+  anti_join(all_NAs) |> 
+  eDNAfuns::tally_wide(rows = db,  cols = precision) |> 
+  select(db, Species, Genus, Family, Order, Worse) |> 
+  pivot_longer(-db, names_to = "rank", values_to = "nHashes") |> 
+  mutate(rank = fct_relevel(rank, c("Species", "Genus", "Family", "Order", "Worse"))) |> 
+  ggplot(aes(x = db, y = nHashes, fill = rank)) +
+  geom_col(color = "black")
+```
+
