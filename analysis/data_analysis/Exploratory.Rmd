@@ -1,0 +1,99 @@
+---
+title: "Exploratory analysis"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library(tidyverse)
+library(eDNAfuns)
+library(here)
+library(phyloseq)
+```
+
+Lo primero cargar los tres objetos, metadata, asv table y taxonomia
+
+```{r}
+ASV <- read_csv(here("data/final_dataset/new_ASV_after_swarm.csv")) |> 
+  filter (!is.na(Hash))
+
+ASV |> distinct(Sample) |> separate(Sample, into = c("biol", "rep"), sep = "_rep") |> group_by(biol) |> tally()
+
+metadata <- read_csv(here("data/final_dataset/metadata.csv")) |> select(Sample, SampleType)
+
+ASV |> distinct(Sample) |> anti_join(metadata)
+
+taxonomia <- read_tsv(here("data/final_dataset/final_best_id.tsv")) |> select(Hash, taxa)
+
+taxonomy_cols <- c("phylum", "class", "order", "family", "genus", "species")
+```
+
+# Step 1 
+
+Eliminar replicas que tengan un numero tan bajo de reads que no sean una representación fidedigna de su muestra
+
+```{r}
+ASV |> 
+  group_by(Sample) |> 
+  summarise (tot = sum(nReads)) -> all.reps
+
+all.reps |> pull(tot, name= Sample) -> reads.per.sample
+
+normparams.reads <- MASS::fitdistr(reads.per.sample, "normal")$estimate
+
+all.reps %>%  
+  mutate(prob = pnorm(tot, normparams.reads[1], normparams.reads[2])) -> all.reps
+
+all.reps |> 
+  filter(prob>0.05) -> good.coverage
+
+ASV |> 
+  semi_join(good.coverage) -> ASV
+
+```
+
+# Step 2
+
+For our community analysis we are going to remove all things without a taxonomical annotation
+
+```{r}
+taxonomia |> mutate(fields = str_count(taxa, "%")) |> group_by(fields) |> tally()
+
+taxonomia |> 
+  filter (taxa != "NA%NA%NA%NA%NA%NA") -> good_taxa
+
+good_taxa |> 
+  separate(taxa, into= taxonomy_cols, sep = "%") |> 
+  filter(str_detect(phylum, "_")) |> distinct(phylum)
+
+good_taxa |> 
+  mutate(taxa = str_remove_all(taxa, "phylum_"),
+         taxa = str_remove_all(taxa, "class_"),
+         taxa = str_remove(taxa, "order_"),
+         taxa = str_remove(taxa, "family_"),
+         taxa = str_remove(taxa, "genus_"),) |>  
+  separate(taxa, into= taxonomy_cols, sep = "%")  |> 
+  mutate(species = str_replace_all(species, "_", " ")) -> good_taxa
+  
+
+```
+
+Reduce the dataset to the Hashes for which we have taxonomic ID
+```{r}
+ASV |> 
+  semi_join(good_taxa) -> ASV_no_NAs
+
+metadata |> 
+  semi_join(ASV_no_NAs) -> metadata_no_NAs
+```
+## Build a phyloseq object
+
+```{r}
+phylo_Nica <- eDNAfuns::tidy2phyloseq(ASV_table = ASV_no_NAs, OTU_taxonomy = good_taxa, metadata = metadata_no_NAs, Taxa = "Hash", Sample = "Sample", Reads = "nReads")
+
+otu_table(phylo_Nica)
+```
+
