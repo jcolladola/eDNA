@@ -20,8 +20,65 @@ blast_results <- read_csv(here("data/blast_midori_with_taxonomy_unique_hashes.cs
 blast_raw <- 
 ```
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+Syntax19 es todos los hashes despues de UNOISE, sin singletons
+Syntax26 es despues de swarm, no singletons
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+```{r}
+Syntax_Midori_190325 <- read_csv(here("data/asignacion_taxonomica_midori_190325.csv"))
 
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+Syntax_Midori_260325 <- read_csv(here("data/asignacion_taxonomica_midori_26032025.csv"))
+```
+
+
+```{r}
+inner_join(Syntax_Midori_190325, Syntax_Midori_260325)
+```
+
+### Comparing before and after swarm
+
+```{r}
+Hash_b4 <- read_csv(here("data/UNOISE_March_2025/demultiplexed_20250326/Hash_key.csv"))
+
+Hash_after <- read_csv(here("data/UNOISE_March_2025/demultiplexed_20250326/new_Hash_key_after_swarm.csv"))
+
+# En teoria, no debe haber ninguna secuencia after awrm que no existiera anteriormente en el before swarm
+
+Hash_after |> anti_join(Hash_b4)
+
+# Correcto
+
+full_join(Syntax_Midori_190325, Syntax_Midori_260325) -> ALL_SYNTAX_MIDORI
+
+
+Hash_b4 |>
+  anti_join(ALL_SYNTAX_MIDORI) |> 
+  eDNAfuns::fasta_writer(header = Hash, sequence = sequence, file.out = here("data/new_seqs_for_syntax_midori.fasta"))
+  
+```
+
+## Nueva asignación taxonómica
+
+Usando rCRUX con Sintax. El input file eran los hashes despues de swarm
+```{r}
+SINTAX_rCRUX <- read_csv(here("data/asignacion_taxonomica_sintax_r_crux_new_hash_after_swarm_270325.csv"))
+```
+
+```{r}
+new_ASV_after_swarm <- read_csv(here("data/UNOISE_March_2025/demultiplexed_sin_singletons/new_ASV_after_swarm.csv"))
+new_Hash_after_swarm <- read_csv(here("data/UNOISE_March_2025/demultiplexed_sin_singletons/new_Hash_key_after_swarm.csv")) |> 
+  filter (!is.na(Hash))
+```
+```{r}
+colnames(SINTAX_rCRUX)[-1] -> taxonomy_cols
+
+SINTAX_rCRUX |> inner_join(new_ASV_after_swarm |> group_by(Hash) |> summarise(nr = sum(nReads), nocc = n())) |> 
+  filter (!is.na(Hash)) |> 
+  unite (all_of(taxonomy_cols), col = "taxa", sep = "|")
+```
+get the fasta
+
+```{r}
+SINTAX_rCRUX |> 
+  anti_join(Hash_after)
+```
+
