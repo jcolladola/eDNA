@@ -17,16 +17,20 @@ library(phyloseq)
 Lo primero cargar los tres objetos, metadata, asv table y taxonomia
 
 ```{r}
-ASV <- read_csv(here("data/final_dataset/new_ASV_after_swarm.csv")) |> 
+ASV <- read_csv(here("data", "final_dataset","new_ASV_after_swarm.csv")) |> 
   filter (!is.na(Hash))
 
 ASV |> distinct(Sample) |> separate(Sample, into = c("biol", "rep"), sep = "_rep") |> group_by(biol) |> tally()
 
-metadata <- read_csv(here("data/final_dataset/metadata.csv")) |> select(Sample, SampleType)
+# metadata <- read_csv(here("metadata.csv")) |> select(Sample, SampleType)
+# metadata <- metadata %>% mutate(Sample.name = sub("_.*", "", Sample))
+# write_csv(metadata, "metadata_completo.csv")
 
-ASV |> distinct(Sample) |> anti_join(metadata)
+metadata_completo <- read.csv(here("data", "final_dataset", "metadata_completo.csv"), sep = ";")
 
-taxonomia <- read_tsv(here("data/final_dataset/final_best_id.tsv")) |> select(Hash, taxa)
+ASV |> distinct(Sample) |> anti_join(metadata_completo)
+
+taxonomia <- read_tsv(here("data", "final_dataset", "final_best_id.tsv")) |> dplyr::select(Hash, taxa)
 
 taxonomy_cols <- c("phylum", "class", "order", "family", "genus", "species")
 ```
@@ -62,6 +66,7 @@ For our community analysis we are going to remove all things without a taxonomic
 ```{r}
 taxonomia |> mutate(fields = str_count(taxa, "%")) |> group_by(fields) |> tally()
 
+taxonomia -> good_taxa
 taxonomia |> 
   filter (taxa != "NA%NA%NA%NA%NA%NA") -> good_taxa
 
@@ -86,14 +91,772 @@ Reduce the dataset to the Hashes for which we have taxonomic ID
 ASV |> 
   semi_join(good_taxa) -> ASV_no_NAs
 
-metadata |> 
+metadata_completo |> 
   semi_join(ASV_no_NAs) -> metadata_no_NAs
 ```
 ## Build a phyloseq object
 
 ```{r}
+
 phylo_Nica <- eDNAfuns::tidy2phyloseq(ASV_table = ASV_no_NAs, OTU_taxonomy = good_taxa, metadata = metadata_no_NAs, Taxa = "Hash", Sample = "Sample", Reads = "nReads")
 
 otu_table(phylo_Nica)
+sample_data(phylo_Nica)
+
 ```
 
+
+## Transformación de reads crudos a proporciones (dentro de cada muestra y réplica).
+
+```{r}
+phy_nica_prop <- transform_sample_counts(phylo_Nica, function(x) x / sum(x))
+```
+
+## Hacemos el merge de cada muestra.
+
+```{r}
+phy_merged <- merge_samples(phy_nica_prop, group = "Sample.name")
+
+otu_table(phy_merged)
+sample_data(phy_merged)
+
+```
+
+## Es necesario arreglar los metadatos para añadírselo al nuevo merge.
+
+```{r}
+meta_original <- as.data.frame(sample_data(phy_nica_prop))
+
+
+meta_summary <- meta_original %>%
+  group_by(Sample.name) %>%
+  summarize(
+    SampleType = dplyr::first(SampleType),
+    Type = dplyr::first(Type),
+    Lake = dplyr::first(Lake),
+    Depth = dplyr::first(Depth)
+  ) %>%
+  as.data.frame()
+
+
+rownames(meta_summary) <- meta_summary$Sample.name
+
+```
+
+Re-asignar el sample_data correcto
+
+```{r}
+sample_data(phy_merged) <- sample_data(meta_summary)
+```
+
+# Contar cuántas réplicas tiene cada Sample.name y Dividir las sumas por el número de réplicas (para sacar la media)
+
+```{r}
+# Contar número de réplicas por Sample.name
+rep_counts <- table(sample_data(phy_nica_prop)$Sample.name)
+
+# Extraer matriz de OTU table
+otu_mat <- as(otu_table(phy_merged), "matrix")
+
+# Averiguar si taxa están en filas o columnas
+if (taxa_are_rows(phy_merged)) {
+  otu_mat <- t(otu_mat)  # Transponer para que filas = muestras
+}
+
+# Crear matriz de medias: dividir cada muestra por su número de réplicas
+otu_mat_mean <- otu_mat
+for (i in rownames(otu_mat_mean)) {
+  otu_mat_mean[i, ] <- otu_mat[i, ] / rep_counts[i]
+}
+
+# Reconstruir el objeto phyloseq con la matriz corregida
+otu_new <- otu_table(t(otu_mat_mean), taxa_are_rows = TRUE)
+phy_mean <- phy_merged
+otu_table(phy_mean) <- otu_new
+
+
+```
+
+### Análisis exploratorio de biodiversidad
+
+# Cálculo del porcentaje de asignación que tenemos a distintos niveles.
+
+Teniendo en cuenta que ya hemos eliminado aquellos hashes cuya asignación es nula a nivel de phylum.
+
+```{r}
+tax <- as.data.frame(tax_table(phy_mean))
+colnames(tax)
+sapply(tax, function(x) {
+  100 * sum(!is.na(x) & x != "" & x != "NA") / nrow(tax)
+})
+
+```
+
+Eliminando los que no tenian asignación a nivel de phylum.
+
+phylum    class    order   family    genus  species 
+96.94513 92.13653 88.08222 69.80954 65.56666 49.82086 
+
+Sin eliminarlos.
+
+  phylum    class    order   family    genus  species 
+20.09459 19.09787 18.25750 14.46998 13.59053 10.32677 
+
+## ASVs únicos y compartidos para filtros y suelos.
+
+Extraer abundancias y metadatos en formato largo
+
+```{r}
+asv_table <- otu_table(phy_mean)
+if (taxa_are_rows(phy_mean)) {
+  asv_table <- t(asv_table)
+}
+
+asv_long <- as.data.frame(asv_table) %>%
+  tibble::rownames_to_column("SampleID") %>%
+  pivot_longer(-SampleID, names_to = "ASV", values_to = "Abundance") %>%
+  filter(Abundance > 0)
+```
+
+Agregar metadatos
+
+```{r}
+meta <- as(sample_data(phy_mean), "data.frame") %>%
+  tibble::rownames_to_column("SampleID")
+
+asv_long <- left_join(asv_long, meta, by = "SampleID")
+```
+
+Para cada lake y ASV, ver en qué tipos ocurre
+
+```{r}
+asv_by_lake_type <- asv_long %>%
+  distinct(Lake, Type, ASV) %>%
+  group_by(Lake, ASV) %>%
+  summarise(
+    types_present = paste(sort(unique(Type)), collapse = ","),
+    .groups = "drop"
+  ) %>%
+  mutate(category = case_when(
+    types_present == "Filter" ~ "Filter_only",
+    types_present == "Soil" ~ "Soil_only",
+    types_present == "Filter,Soil" ~ "Shared_filter_soil",
+    types_present == "Sponge" ~ "Sponge",
+    types_present == "Filter,Sponge" ~ "Shared_sponge_filter",
+    types_present == "Soil,Sponge" ~ "Shared_sponge_soil",
+    types_present == "Filter,Soil,Sponge" ~ "Shared_all"
+  ))
+
+```
+
+Contar cuántos ASVs hay por categoría y lago
+
+```{r}
+
+asv_by_lake_type <- data.frame(asv_by_lake_type)
+
+summary_table <- asv_by_lake_type %>%
+  dplyr::count(Lake, category) %>%
+  tidyr::pivot_wider(names_from = category, values_from = n, values_fill = 0)
+
+print(summary_table)
+
+```
+
+### ASVs por lago
+
+```{r}
+asvs_por_lago <- asv_by_lake_type %>%
+  group_by(Lake) %>%
+  summarise(n_unique_asvs = n_distinct(ASV)) %>%
+  arrange(desc(n_unique_asvs))
+  
+print(asvs_por_lago)
+```
+
+## Separación en tipos de muestra.
+
+```{r}
+filter_samples<-prune_samples(sample_data(phy_mean)$Type =="Filter",phy_mean)
+soil_samples<-prune_samples(sample_data(phy_mean)$Type =="Soil",phy_mean)
+all_samples_no_sponges <- prune_samples(sample_data(phy_mean)$Type %in% c("Soil", "Filter"),phy_mean)
+```
+
+## Para filtros
+
+```{r}
+filter_richness<-estimate_richness(filter_samples,measures=c("Shannon","InvSimpson"))
+filter_richness
+
+filter_richness$Lago <- sample_data(filter_samples)$Lake
+filter_richness_by_lake <- filter_richness %>%
+  group_by(Lago) %>%
+  summarise(across(c(Shannon, InvSimpson), mean, na.rm = TRUE))
+
+print(filter_richness_by_lake)
+
+```
+
+## Para suelo
+
+```{r}
+soil_richness<-estimate_richness(soil_samples,measures=c("Shannon","InvSimpson"))
+soil_richness
+
+soil_richness$Lago <- sample_data(soil_samples)$Lake
+soil_richness_by_lake <- soil_richness %>%
+  group_by(Lago) %>%
+  summarise(across(c(Shannon, InvSimpson), mean, na.rm = TRUE))
+
+print(soil_richness_by_lake)
+
+```
+
+## TOTAL (diversidad media de las muestras por lago)
+
+```{r}
+
+total_richness <- estimate_richness(phy_mean,measures=c("Shannon","InvSimpson"))
+total_richness
+
+total_richness$Lago <- sample_data(phy_mean)$Lake
+total_richness_by_lake <- total_richness %>%
+  group_by(Lago) %>%
+  summarise(across(c(Shannon, InvSimpson), mean, na.rm = TRUE))
+
+print(total_richness_by_lake)
+
+```
+
+## Boxplot de diversidad por lago.
+
+Solo filtros
+
+```{r}
+
+p <- plot_richness( filter_samples, x="Lake", measures=c( "Shannon","InvSimpson"))
+p <- p + geom_boxplot(data = p$data, aes(x = Lake, y = value, fill = Lake),coef=6)
+p
+```
+
+
+## Plot diversidad alfa por grupos.
+
+```{r}
+plot_richness(phy_mean,x="Sample.name",color = "Lake", measures=c("Shannon","InvSimpson"))  
+
+
+plot_richness(phy_mean,x="Lake", color = "Type", measures=c("Shannon","InvSimpson"))  
+
+
+a <- plot_richness(phy_mean,x="Depth",measures=c("Shannon", "InvSimpson"), color = "Lake", shape="Type")
+a + 
+  facet_grid(variable~ Lake)
+
+```
+
+
+## GRAFICO DIVERSIDAD ALFA DE PUNTOS POR LAGO Y PROFUNDIDAD (SEPARANDO LAGOS)
+
+```{r}
+pop2 <- plot_richness(phy_mean, x="Depth", measures=c("Shannon")) +
+  geom_point(size=3, aes(fill=Lake, shape=Type)) +  # Borde negro para mayor contraste
+  scale_shape_manual(values = c(21, 22, 24)) +  # Asignar formas manualmente (21 y 24 son comunes)
+  theme_bw() + 
+  labs(x="Depth (m)", y="Alpha Diversity (Shannon)", shape="Sample Type") + 
+  theme(axis.text = element_text(size=10), 
+        axis.title = element_text(size=10),
+        legend.position = "right")  
+
+
+pop2 + 
+  facet_wrap(~ Lake, nrow = 2) +  # Organiza en 2 filas
+  guides(fill = "none")  # Elimina la leyenda innecesaria de 'lake'
+```
+
+## ¿HAY DIFERENCIAS EN LA DIVERSIDAD DE AGUA ENTRE LAGOS?
+
+Prueba de Normalidad.
+```{r}
+shapiro.test(filter_richness$Shannon)
+```
+
+Los datos pueden considerarse normales.
+
+Prueba de homogeneidad de varianzas.
+
+```{r}
+library(car)
+
+
+resultado_levene <- leveneTest(Shannon ~ Lago, data = filter_richness)
+print(resultado_levene)
+```
+
+Se puede hacer ANOVA.
+
+ANOVA
+Hacemos ANOVA para comparar la diversidad de Shannon entre lagos.
+
+```{r}
+anova_result <- aov(Shannon ~ Lago, data = filter_richness)
+summary(anova_result)
+```
+
+Hay diferencias en los valores de diversidad entre lagos.
+
+Test post-hoc para ver qué lagos difieren
+
+```{r}
+library(agricolae)
+TukeyHSD(anova_result)
+tukey_test <- HSD.test(anova_result, "Lago", group = TRUE)
+print(tukey_test$groups)
+
+```
+
+Grafico de resultados.
+
+```{r}
+resumen <- filter_richness %>%
+  group_by(Lago) %>%
+  summarise(
+    mean_Shannon = mean(Shannon),
+    se_Shannon = sd(Shannon) / sqrt(n())
+  )
+
+resumen$groups <- tukey_test$groups[match(resumen$Lago, rownames(tukey_test$groups)), "groups"]
+
+
+ggplot(resumen, aes(x = Lago, y = mean_Shannon)) +
+  geom_bar(stat = "identity", fill = "coral", color = "black") +
+  geom_errorbar(aes(ymin = mean_Shannon - se_Shannon, ymax = mean_Shannon + se_Shannon), width = 0.2) +
+  geom_text(aes(label = groups, y = mean_Shannon + se_Shannon + 0.2), size = 3) +  # Añadir letras arriba de las barras
+  labs(x = "Lago", y = "Índice de Shannon", title = "Comparación de Diversidad entre Lagos") +
+  theme_minimal()
+```
+
+## Diversidad Beta
+
+Distancia de Bray - Curtis
+
+Muestras de filtros
+
+```{r}
+dist_bray_filt <- phyloseq::distance(filter_samples, method = "bray")
+ordination_pcoa_bray <- ordinate(filter_samples, method = "PCoA", distance = "bray")
+
+plot_ordination(filter_samples, ordination_pcoa_bray,axes = c(1,2), 
+                color = "Lake",) +         
+  geom_point(size = 3) +
+  theme_minimal() +
+  labs(color = "Lago") +
+  theme(legend.position = "right")
+
+```
+
+Todas las muestras.
+
+```{r}
+dist_bray_all <- phyloseq::distance(all_samples_no_sponges, method = "bray")
+
+ordination_pcoa_bray_all <- ordinate(all_samples_no_sponges, method = "PCoA", distance = "bray")
+
+plot_ordination(all_samples_no_sponges, ordination_pcoa_bray_all, 
+                color = "Lake",           # color por lago
+                shape = "Type") +         # tamaño según la profundidad
+  geom_point(size = 3) +
+  #geom_text(aes(label = sample_names(all_samples_no_sponges)), size = 3) +
+  theme_minimal() +
+  labs(color = "Lago", shape = "Tipo de muestra") +
+  theme(legend.position = "right")
+
+```
+
+NMDS
+
+```{r}
+ordination_nmds <- ordinate(filter_samples, method = "NMDS", distance = "bray", trymax=1000, k=2)
+ordination_nmds
+```
+
+```{r}
+nmds_points <- as.data.frame(ordination_nmds$points)
+nmds_points$SampleID <- rownames(nmds_points)
+
+# Extraer metadata de las muestras
+metadata_filtros <- as.data.frame(sample_data(filter_samples))
+metadata_filtros$SampleID <- rownames(metadata_filtros)
+
+
+# Combinar coordenadas NMDS con metadatos (Lago)
+nmds_points <- nmds_points %>%
+  left_join(metadata_filtros, by = "SampleID")
+
+
+ggplot(nmds_points, aes(x = MDS1, y = MDS2, color = Lake)) +
+  geom_point(size = 3) +
+  theme_minimal() +
+  ggtitle(paste("NMDS por Lago (Stress =", round(ordination_nmds$stress, 3), ")"))
+```
+
+## PERMANOVA para ver diferencias significativas entre lagos de diversidad beta.
+
+Comenzamos con test de dispersión.
+
+```{r}
+bd <- betadisper(dist_bray_filt, group = metadata_filtros$Lake)
+anova(bd)
+```
+
+La dispersión entre los lagos es homogénea.
+
+Hacemos permanova.
+
+```{r}
+metadata_filtros <- as.tibble(metadata_filtros)
+
+permanova_result <- adonis2(dist_bray_filt ~ Lake, data = metadata_filtros, permutations = 999)
+print(permanova_result)
+```
+
+Hay diferencias entre lagos. El lago explica un 73.2% de la variabilidad.
+
+Buscamos las diferencias pareadas.
+
+```{r}
+library(pairwiseAdonis)
+
+pairwise_permanova <- pairwise.adonis2(dist_bray_filt ~ Lake, data = metadata_filtros, permutations = 999)
+
+print(pairwise_permanova)
+```
+
+Aplicamos corrección por FDR. 
+
+Extraemos p valor de todas las comparaciones.
+
+```{r}
+comparaciones <- names(pairwise_permanova)[-1]  
+pvalores <- sapply(comparaciones, function(x) pairwise_permanova[[x]]$`Pr(>F)`[1])
+
+resultados_pairwise <- data.frame(
+  Comparacion = comparaciones,
+  pvalor = pvalores
+)
+
+print(resultados_pairwise)
+
+```
+
+Ahora sí ajustamos los p-valores.
+
+```{r}
+resultados_pairwise$FDR_pvalor <- p.adjust(resultados_pairwise$pvalor, method = "fdr")
+
+print(resultados_pairwise)
+
+```
+
+## Phyla más abundante en cada lago
+
+Muestras de filtros.
+
+```{r}
+phyla_data <- tax_glom(filter_samples, taxrank = "phylum")
+
+phyla_df <- psmelt(phyla_data)
+
+phyla_summary <- phyla_df %>%
+  group_by(Lake, phylum) %>%
+  summarise(Mean_Abundance = mean(Abundance)) %>%
+  ungroup()
+
+top_phyla <- phyla_summary %>%
+  group_by(phylum) %>%
+  summarise(Total_Abundance = sum(Mean_Abundance)) %>%
+  arrange(desc(Total_Abundance)) %>%
+  slice(1:10) %>%
+  pull(phylum)
+
+phyla_summary_grouped <- phyla_summary %>%
+  mutate(Phylum_Grouped = ifelse(phylum %in% top_phyla, phylum, "Otros"))
+
+phyla_summary_grouped <- phyla_summary_grouped %>%
+  group_by(Lake, Phylum_Grouped) %>%
+  summarise(Mean_Abundance = sum(Mean_Abundance)) %>%
+  ungroup()
+
+ggplot(phyla_summary_grouped, aes(x = Lake, y = Mean_Abundance, fill = Phylum_Grouped)) +
+  geom_bar(stat = "identity", position = "fill") +
+  theme_minimal() +
+  labs(x = "Lago", y = "Proporción de abundancia", fill = "Phylum") +
+  ggtitle("Phyla más abundantes en cada lago (otros agrupados)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+## Analisis de composición.
+
+Preparación de datos.
+
+Previamente hay que solucionar una línea de código que está mal.
+
+trace(ancombc2, edit = TRUE)
+
+Cambiamos la línea "(formula(paste0("~", fix_formula)), data = meta_data)" por "data = as.data.frame (meta_data)"
+
+```{r}
+library(ANCOMBC)
+
+ancombc2_result <- ancombc2(
+  data = filter_samples,  # << Tu phyloseq (sólo filtros)
+  fix_formula = "Lake",    # << Tu variable de interés
+  group = "Lake",          # << Grupo para detectar structural zeros y comparaciones
+  p_adj_method = "fdr", 
+  pairwise = TRUE,
+  prv_cut = 0.05
+)
+
+ancombc2_result$res
+
+```
+
+Ver qué taxonomía tienen los hashes.
+
+```{r}
+taxonomy_table <- as.data.frame(tax_table(filter_samples))
+hashes_diferenciales <- ancombc2_result$res[,1]
+
+taxa_info <- taxonomy_table[rownames(taxonomy_table) %in% hashes_diferenciales, ]
+
+
+taxa_info
+
+
+```
+
+
+## Agrupación funcional de phyla (autótrofos, heterótrofos, parásitos...)
+
+```{r}
+taxonomy_table <- as.data.frame(tax_table(filter_samples))
+
+# Ver clases únicas
+unique_phylum <- unique(taxonomy_table$phylum)
+
+# Ordenar
+sort(unique_phylum)
+
+```
+
+
+```{r}
+animales_phyla <- c(
+  "Rotifera", "Mollusca", "Cnidaria", "Arthropoda", "Chordata", 
+  "Porifera", "Annelida", "Platyhelminthes", "Echinodermata", 
+  "Nematoda", "Gastrotricha", "Nemertea", "Bryozoa", "Hemichordata"
+)
+
+
+tax_animales <- taxonomy_table %>%
+  filter(phylum %in% animales_phyla)
+
+class_animales <- tax_animales %>%
+  filter(!is.na(class)) %>%
+  distinct(class) %>%
+  arrange(class)
+
+class_animales <- as.vector(class_animales)
+
+print(class_animales)
+
+```
+
+```{r}
+# Crear data.frame Clase - Grupo funcional
+
+clase_guild <- data.frame(
+  class = c(
+    "Actinopteri", "Amphibia", "Anthozoa", "Arachnida", "Ascidiacea", 
+    "Asteroidea", "Aves", "Bivalvia", "Branchiopoda", "Catenulida", 
+    "Cephalopoda", "Chaetonotida", "Chilopoda", "Chondrichthyes", "Chromadorea", 
+    "Clitellata", "Collembola", "Crinoidea", "Cubozoa", "Demospongiae", 
+    "Diplopoda", "Echinoidea", "Enopla", "Enteropneusta", "Eurotatoria", 
+    "Gastropoda", "Gymnolaemata", "Hexactinellida", "Hexanauplia", "Holothuroidea", 
+    "Homoscleromorpha", "Hydrozoa", "Insecta", "Lepidosauria", "Malacostraca", 
+    "Mammalia", "Ophiuroidea", "Ostracoda", "Palaeonemertea", "Pilidiophora", 
+    "Polychaeta", "Protura", "Rhabditophora", "Scyphozoa", "Staurozoa", 
+    "Thaliacea", "Thecostraca", "Trematoda"
+  ),
+  FunctionalGroup = c(
+    "Depredador", "Depredador", "Filtrador", "Depredador", "Filtrador",
+    "Detritívoro", "Depredador", "Filtrador", "Filtrador", "Depredador",
+    "Depredador", "Filtrador", "Depredador", "Depredador", "Parásito",
+    "Detritívoro", "Detritívoro", "Filtrador", "Depredador", "Filtrador",
+    "Detritívoro", "Herbívoro", "Depredador", "Filtrador", "Filtrador",
+    "Herbívoro", "Filtrador", "Filtrador", "Filtrador", "Detritívoro",
+    "Filtrador", "Depredador", "Variable", "Herbívoro", "Filtrador",
+    "Omnívoro", "Filtrador", "Filtrador", "Depredador", "Depredador",
+    "Detritívoro", "Detritívoro", "Parásito", "Depredador", "Depredador",
+    "Filtrador", "Parásito", "Parásito"
+  ),
+  stringsAsFactors = FALSE
+)
+
+```
+
+```{r}
+ps_animales <- subset_taxa(filter_samples, class %in% c(
+    "Actinopteri", "Amphibia", "Anthozoa", "Arachnida", "Ascidiacea", 
+    "Asteroidea", "Aves", "Bivalvia", "Branchiopoda", "Catenulida", 
+    "Cephalopoda", "Chaetonotida", "Chilopoda", "Chondrichthyes", "Chromadorea", 
+    "Clitellata", "Collembola", "Crinoidea", "Cubozoa", "Demospongiae", 
+    "Diplopoda", "Echinoidea", "Enopla", "Enteropneusta", "Eurotatoria", 
+    "Gastropoda", "Gymnolaemata", "Hexactinellida", "Hexanauplia", "Holothuroidea", 
+    "Homoscleromorpha", "Hydrozoa", "Insecta", "Lepidosauria", "Malacostraca", 
+    "Mammalia", "Ophiuroidea", "Ostracoda", "Palaeonemertea", "Pilidiophora", 
+    "Polychaeta", "Protura", "Rhabditophora", "Scyphozoa", "Staurozoa", 
+    "Thaliacea", "Thecostraca", "Trematoda"
+  ))
+
+
+```
+
+
+```{r}
+# Convertir el data.frame de clases y grupos funcionales en un formato adecuado
+functional_group_df <- as.data.frame(clase_guild)
+
+tax_df <- as.data.frame(tax_table(ps_animales))
+tax_df$OTU <- rownames(tax_df)
+
+otu_names <- taxa_names(ps_animales)
+taxa_names_in_tax_table <- rownames(tax_table(ps_animales))
+
+# Agregar la columna de 'FunctionalGroup' a la tax_table
+functional_group_df <- as.data.frame(functional_group_df)
+
+# Convertir tax_table a data.frame temporal
+tax_df <- as.data.frame(tax_table(ps_animales))
+
+# Asegurarnos de que las clases en tax_df coincidan con las clases en functional_group_df
+tax_df$FunctionalGroup <- functional_group_df$FunctionalGroup[match(tax_df$class, functional_group_df$class)]
+
+# Ahora, volver a convertir tax_df a matriz y asignarlo a la tax_table de ps_animales
+tax_table(ps_animales) <- as.matrix(tax_df)
+
+# Verificar que la columna 'FunctionalGroup' se ha añadido correctamente
+head(tax_table(ps_animales))
+```
+
+```{r}
+psmelt_data <- psmelt(ps_animales)
+psmelt_data_summary <- psmelt_data %>%
+  group_by(Lake, FunctionalGroup) %>%
+  summarise(Total_Abundance = sum(Abundance)) %>%
+  ungroup()
+
+psmelt_data_summary <- psmelt_data_summary %>%
+  group_by(Lake) %>%
+  mutate(Proportion = Total_Abundance / sum(Total_Abundance)) %>%
+  ungroup()
+
+
+top_functional_groups <- psmelt_data_summary %>%
+  group_by(FunctionalGroup) %>%
+  summarise(Total_Abundance = sum(Proportion)) %>%
+  arrange(desc(Total_Abundance)) %>%
+  slice(1:10) %>%
+  pull(FunctionalGroup)
+
+psmelt_data_summary_grouped <- psmelt_data_summary %>%
+  mutate(FunctionalGroup_Grouped = ifelse(FunctionalGroup %in% top_functional_groups, FunctionalGroup, "Otros"))
+
+
+psmelt_data_summary_grouped <- psmelt_data_summary_grouped %>%
+  group_by(Lake, FunctionalGroup_Grouped) %>%
+  summarise(Proportion = sum(Proportion)) %>%
+  ungroup()
+
+ggplot(psmelt_data_summary_grouped, aes(x = Lake, y = Proportion, fill = FunctionalGroup_Grouped)) +
+  geom_bar(stat = "identity", position = "fill") +  # "fill" asegura que las barras sumen 1 por lago
+  theme_minimal() +
+  labs(x = "Lago", y = "Proporción de abundancia", fill = "Grupo Funcional") +
+  ggtitle("Composición funcional por lago (otros agrupados)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+Grafico de los ordenes principales de animales.
+
+```{r}
+order_animals <- tax_glom(ps_animales, taxrank = "order")
+
+order_animal_df <- psmelt(order_animals)
+
+order_animal_summary <- order_animal_df %>%
+  group_by(Lake, order) %>%
+  summarise(Mean_Abundance = mean(Abundance)) %>%
+  ungroup()
+
+top_animal_order <- order_animal_summary %>%
+  group_by(order) %>%
+  summarise(Total_Abundance = sum(Mean_Abundance)) %>%
+  arrange(desc(Total_Abundance)) %>%
+  slice(1:10) %>%
+  pull(order)
+
+order_animal_summary_grouped <- order_animal_summary %>%
+  mutate(order_Grouped = ifelse(order %in% top_animal_order, order, "Otros"))
+
+order_animal_summary_grouped <- order_animal_summary_grouped %>%
+  group_by(Lake, order_Grouped) %>%
+  summarise(Mean_Abundance = sum(Mean_Abundance)) %>%
+  ungroup()
+
+ggplot(order_animal_summary_grouped, aes(x = Lake, y = Mean_Abundance, fill = order_Grouped)) +
+  geom_bar(stat = "identity", position = "fill") +
+  theme_minimal() +
+  labs(x = "Lago", y = "Proporción de abundancia", fill = "Order") +
+  ggtitle("Ordenes de animales más abundantes en cada lago (otros agrupados)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+Grafico de las clases principales de animales.
+
+```{r}
+class_animals <- tax_glom(ps_animales, taxrank = "class")
+
+class_animal_df <- psmelt(class_animals)
+
+class_animal_summary <- class_animal_df %>%
+  group_by(Lake, class) %>%
+  summarise(Mean_Abundance = mean(Abundance)) %>%
+  ungroup()
+
+class_animal_order <- class_animal_summary %>%
+  group_by(class) %>%
+  summarise(Total_Abundance = sum(Mean_Abundance)) %>%
+  arrange(desc(Total_Abundance)) %>%
+  slice(1:10) %>%
+  pull(class)
+
+class_animal_summary_grouped <- class_animal_summary %>%
+  mutate(class_Grouped = ifelse(class %in% class_animal_order, class, "Otros"))
+
+class_animal_summary_grouped <- class_animal_summary_grouped %>%
+  group_by(Lake, class_Grouped) %>%
+  summarise(Mean_Abundance = sum(Mean_Abundance)) %>%
+  ungroup()
+
+ggplot(class_animal_summary_grouped, aes(x = Lake, y = Mean_Abundance, fill = class_Grouped)) +
+  geom_bar(stat = "identity", position = "fill") +
+  theme_minimal() +
+  labs(x = "Lago", y = "Proporción de abundancia", fill = "Class") +
+  ggtitle("Clases de animales más abundantes en cada lago (otros agrupados)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
